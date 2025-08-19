@@ -5,32 +5,35 @@
 
 clc; clear; close all;
 
-% ———— 1. 定义根目录 & 中心列表 ————
-projRoot = '/Users/yinziyuan/Desktop/PacMap Project/ICARE_GUI_modifications-main';
-centers = {'UTW', 'MGH', 'BWH'};  % 可自定义中心列表
+% ———— 0) 路径策略 ————
+dataRoot = 'F:\ICARE_organized';                       %%% 修改：外接硬盘根目录（只读）
+projRoot = fileparts(mfilename('fullpath'));            %%% 修改：当前脚本目录（谱图读取 & 结果写入 & 工具）
+
+% ———— 1) 中心列表 ————
+centers = {'BIDMC','MGH','ULB'};                        %%% 修改：示例中心，按需增减
 
 % 恢复 MATLAB 默认路径并添加工具路径
 restoredefaultpath;
-addpath(fullfile(projRoot, 'Tools'));
-addpath(fullfile(projRoot, 'Tools', 'qEEG'));
+addpath(fullfile(projRoot, 'Tools'));                   %%% 修改：Tools 在脚本目录
+addpath(fullfile(projRoot, 'Tools', 'qEEG'));           %%% 修改：qEEG 在脚本目录
 
 % 检查必要函数是否存在
-assert(~isempty(which('fcn_cpd')), '❌ 缺失 fcn_cpd');
-assert(~isempty(which('fcn_computeSpec')), '❌ 缺失 fcn_computeSpec');
+assert(~isempty(which('fcn_cpd')),        '❌ 缺失 fcn_cpd');
+assert(~isempty(which('fcn_computeSpec')),'❌ 缺失 fcn_computeSpec');
 
-% ———— 2. CPD 参数 ————
+% ———— 2) CPD 参数 ————
 Fs = 100;           % 采样率 Hz
 alpha_cpd = 0.1;    % CPD 灵敏度
 
-% ———— 3. 遍历所有中心 ————
+% ———— 3) 遍历所有中心 ————
 for c = 1:length(centers)
     center = centers{c};
     fprintf('\n🌐 正在处理中心: %s\n', center);
 
-    % 设置输入输出路径
-    dataDir = fullfile(projRoot, 'eeg', center);
-    specDir = fullfile(projRoot, 'GUI_results', center, 'Spectrograms1');
-    outDir  = fullfile(projRoot, 'GUI_results', center, 'CPDs1');
+    % —— 输入/输出路径：读外接硬盘EEG；读脚本目录谱图；写脚本目录CPDs ——
+    dataDir = fullfile(dataRoot, 'eeg', center);                             %%% 修改
+    specDir = fullfile(projRoot, 'GUI_results', center, 'Spectrograms1');    %%% 修改
+    outDir  = fullfile(projRoot, 'GUI_results', center, 'CPDs1');            %%% 修改
     if ~exist(outDir, 'dir'); mkdir(outDir); end
 
     eegFiles = dir(fullfile(dataDir, '*.mat'));
@@ -45,24 +48,46 @@ for c = 1:length(centers)
         base = fileName(1:end-4);
         fprintf('(%d/%d) [%s] 处理文件: %s\n', i, numel(eegFiles), center, fileName);
 
-        % 读取 EEG 长度
-        Sx = load(fullfile(dataDir, fileName), 'x');
-        if ~isfield(Sx, 'x')
-            warning('❌ 文件中缺少 x 变量，跳过: %s', fileName);
+        % —— 3.1 读取 EEG 长度（兼容 data 或 x.data） ——
+        M = [];
+        try
+            info = whos('-file', fullfile(dataDir, fileName));
+            if ismember('data', {info.name})
+                Sx = load(fullfile(dataDir, fileName), 'data');
+                M  = size(Sx.data, 2);
+            elseif ismember('x', {info.name})
+                Sx = load(fullfile(dataDir, fileName), 'x');
+                if isstruct(Sx.x) && isfield(Sx.x, 'data')
+                    M = size(Sx.x.data, 2);
+                else
+                    error('x 存在但无 data 字段');
+                end
+            else
+                error('未检测到 data 或 x 变量');
+            end
+        catch ME
+            warning('❌ EEG 读取失败: %s（%s）→ 跳过', fileName, ME.message);
             continue;
         end
-        [~, N] = size(Sx.x.data);
-        nn = ceil(N / (2 * Fs));  % 每 2 秒为一个窗口
+        nn = ceil(M / (2 * Fs));  % 每 2 秒为一个窗口
 
-        % 加载谱图并对齐长度
-        specPath = fullfile(specDir, [base '_spect.mat']);
+        % —— 3.2 加载谱图并对齐长度 ——
+        specPath = fullfile(specDir, [base '_spect.mat']);  %%% 修改：从脚本目录读取谱图
         if ~exist(specPath, 'file')
             warning('❌ 缺少谱图文件，跳过: %s', specPath);
             continue;
         end
-        tmp = load(specPath, 'Sdata');
-        Sdata = tmp.Sdata(:, 2);  % 提取第二个区域谱图
 
+        tmp = load(specPath, 'Sdata');
+        if ~isfield(tmp, 'Sdata')
+            warning('❌ %s 中没有 Sdata，跳过', specPath);
+            continue;
+        end
+
+        % 取第二个区域谱图（与你原逻辑一致）
+        Sdata = tmp.Sdata(:, 2);
+
+        % 将所有区域谱图长度对齐到 nn（不足补零，超出截断）
         mm = size(Sdata{1}, 2);
         if mm >= nn
             for kk = 1:numel(Sdata)
@@ -76,10 +101,10 @@ for c = 1:length(centers)
             end
         end
 
-        % 变化点检测
+        % —— 3.3 变化点检测 ——
         [isCPs, isCPcenters] = fcn_cpd(Sdata, alpha_cpd);
 
-        % 构建 LUT
+        % —— 3.4 构建 LUT（与原逻辑一致） ——
         idx_rise = find(isCPs);
         if isempty(idx_rise)
             lut_cpd = [1, 1, nn];
@@ -87,13 +112,13 @@ for c = 1:length(centers)
             isCPcenters = false(1, nn);
         else
             idx_fall = unique([idx_rise(2:end)-1; nn]);
-            idx_cpc = idx_rise(:);
+            idx_cpc  = idx_rise(:);
             m = numel(idx_rise);
             idx_fall = idx_fall(1:m);
-            lut_cpd = [idx_cpc, idx_rise(:), idx_fall];
+            lut_cpd  = [idx_cpc, idx_rise(:), idx_fall];
         end
 
-        % 保存输出
+        % —— 3.5 保存输出（到脚本目录） ——
         save(fullfile(outDir, [base '_cpc.mat']), 'isCPs', 'isCPcenters', 'lut_cpd', '-v7.3');
     end
 
